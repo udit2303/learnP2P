@@ -21,6 +21,7 @@ func main() {
 	webrtcRecv := flag.Bool("webrtc-recv", false, "WebRTC receiver: paste OFFER and output ANSWER")
 	portFlag := flag.Int("port", 8000, "Port to expose for local discovery")
 	nameFlag := flag.String("name", "", "Node name to expose (default: COMPUTERNAME)")
+	passwordFlag := flag.String("password", "", "Password for local connection authentication (required to connect)")
 	flag.Parse()
 
 	baseName := os.Getenv("COMPUTERNAME")
@@ -120,6 +121,18 @@ func main() {
 	}
 	fmt.Printf("Broadcasting as '%s' on port %d with IPs: %v\n", name, port, localIPs)
 
+	// Start local TCP server to accept connections and log on connect
+	expectedPassword := *passwordFlag
+	if expectedPassword == "" {
+		// Default expected password to node name when not provided via flag
+		expectedPassword = "hello"
+	}
+	shutdownTCP, err := connections.StartLocalServer(name, port, expectedPassword)
+	if err != nil {
+		log.Fatalf("Failed to start local server: %v", err)
+	}
+	defer shutdownTCP()
+
 	server, err := connections.StartMDNS(name, port)
 	if err != nil {
 		log.Fatalf("Failed to register mDNS: %v", err)
@@ -148,10 +161,72 @@ func main() {
 	//     }
 	// }
 
-	// Keep running and print discovered nodes as they arrive
-	for n := range nodeCh {
-		fmt.Printf("Discovered: %s\t%s\t%d\n", n.Name, n.IP, n.Port)
+	// Maintain a list of discovered peers
+	type item struct {
+		Name, IP string
+		Port     int
 	}
+	var list []item
+	seen := make(map[string]struct{})
+
+	go func() {
+		for n := range nodeCh {
+			if n.Name == name {
+				continue // skip self by name
+			}
+			key := n.Name + "|" + n.IP + "|" + fmt.Sprint(n.Port)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			list = append(list, item{Name: n.Name, IP: n.IP, Port: n.Port})
+			fmt.Printf("Discovered: [%d] %s\t%s\t%d\n", len(list), n.Name, n.IP, n.Port)
+		}
+	}()
+
+	// Simple REPL to choose a peer to connect to
+REPL:
+	for {
+		fmt.Print("\nEnter number to connect, 0 to list peers, or -1 to quit: ")
+		choiceStr := readLine()
+		choice, _ := strconv.Atoi(strings.TrimSpace(choiceStr))
+		switch {
+		case choice == -1:
+			return
+		case choice == 0:
+			if len(list) == 0 {
+				fmt.Println("No peers discovered yet...")
+			} else {
+				fmt.Println("Peers:")
+				for i, it := range list {
+					fmt.Printf("[%d] %s\t%s\t%d\n", i+1, it.Name, it.IP, it.Port)
+				}
+			}
+		default:
+			idx := choice - 1
+			if idx < 0 || idx >= len(list) {
+				fmt.Println("Invalid selection")
+				continue
+			}
+			it := list[idx]
+			fmt.Printf("Connecting to %s at %s:%d...\n", it.Name, it.IP, it.Port)
+			// Prompt for password at connection time
+			fmt.Printf("Enter password for %s: ", it.Name)
+			pw := strings.TrimSpace(readLine())
+			peerName, err := connections.ConnectLocal(it.IP, it.Port, name, pw, 5*time.Second)
+			if err != nil {
+				fmt.Printf("Connection failed: %v\n", err)
+				continue
+			}
+			fmt.Printf("Connected to %s successfully! You can keep this node running.\n", peerName)
+			// Stop prompting and keep process alive
+			break REPL
+		}
+	}
+
+	// Keep running until interrupted
+	fmt.Println("Press Ctrl+C to exit.")
+	select {}
 }
 
 func readLine() string {
