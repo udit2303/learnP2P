@@ -65,6 +65,7 @@ Integrity binding:
 
 Filesystem handling on receive:
 - Files are written to `public/` using a temporary `.part` file and then atomically renamed on success.
+ - The receiver computes the file's SHA-256 while writing and verifies it equals the manifest hash before renaming. If it doesn't match, the partial file is deleted and the transfer fails.
 
 Notes:
 - Backward compatibility is removed; only header version 0x02 (RSA-OAEP) is supported.
@@ -135,6 +136,7 @@ Files are saved under `public\...` on the receiver.
 - Confidentiality: AES-256-GCM encrypts manifest and file data. A new AES key is generated for each file.
 - Key exchange: The receiver first sends its RSA-4096 public key. The sender encrypts the AES key using RSA-OAEP (SHA-256), so only the receiver can decrypt it.
 - Integrity and binding: AES-GCM provides integrity. Additional AAD binds the manifest and chunks, helping detect mismatches or tampering.
+   - The receiver performs a SHA-256 checksum verification against the manifest after the transfer completes.
 - Nonces: Each encrypted message uses a unique nonce derived from a random base plus a counter, avoiding nonce reuse.
 
 Limitations and recommendations:

@@ -2,12 +2,11 @@ package transfer
 
 import (
 	"bufio"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"hash"
-	"hash/crc32"
 	"io"
 	"net"
 	"os"
@@ -124,8 +123,8 @@ func Receive(conn net.Conn) (Manifest, string, error) {
 	defer out.Close()
 
 	var written int64
-	// Optional lightweight checksum during transfer (CRC32)
-	var h hash.Hash32 = crc32.NewIEEE()
+	// Compute SHA-256 on the fly and compare to manifest at the end
+	h := sha256.New()
 	// AAD bytes for chunks
 	hashBytes, derr := hex.DecodeString(man.Hash)
 	if derr != nil {
@@ -169,6 +168,16 @@ func Receive(conn net.Conn) (Manifest, string, error) {
 	// Final progress update
 	printProgress("Receiving", man.Name, written, man.Size, start)
 	fmt.Print("\n")
+
+	// Verify SHA-256 matches manifest
+	calc := hex.EncodeToString(h.Sum(nil))
+	if calc != man.Hash {
+		// Cleanup partial file
+		_ = out.Close()
+		_ = os.Remove(tmpPath)
+		return Manifest{}, "", fmt.Errorf("hash mismatch: got %s, expected %s", calc, man.Hash)
+	}
+
 	if err := os.Rename(tmpPath, outPath); err != nil {
 		return Manifest{}, "", fmt.Errorf("finalize file: %w", err)
 	}
