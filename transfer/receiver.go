@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"time"
 
 	pcrypto "learnP2P/crypto"
 )
@@ -130,6 +131,8 @@ func Receive(conn net.Conn) (Manifest, string, error) {
 	if derr != nil {
 		return Manifest{}, "", fmt.Errorf("decode hash: %w", derr)
 	}
+	start := time.Now()
+	lastTick := time.Time{}
 	for written < man.Size {
 		// Each incoming chunk is len+ciphertext
 		var clen uint32
@@ -152,11 +155,20 @@ func Receive(conn net.Conn) (Manifest, string, error) {
 		}
 		_, _ = h.Write(pt)
 		written += int64(len(pt))
+
+		now := time.Now()
+		if lastTick.IsZero() || now.Sub(lastTick) >= 200*time.Millisecond {
+			printProgress("Receiving", man.Name, written, man.Size, start)
+			lastTick = now
+		}
 	}
 
 	if err := out.Close(); err != nil {
 		return Manifest{}, "", fmt.Errorf("close output: %w", err)
 	}
+	// Final progress update
+	printProgress("Receiving", man.Name, written, man.Size, start)
+	fmt.Print("\n")
 	if err := os.Rename(tmpPath, outPath); err != nil {
 		return Manifest{}, "", fmt.Errorf("finalize file: %w", err)
 	}

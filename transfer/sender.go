@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"time"
 
 	pcrypto "learnP2P/crypto"
 )
@@ -116,7 +117,7 @@ func Send(conn net.Conn, filePath string) error {
 		return fmt.Errorf("flush manifest: %w", err)
 	}
 
-	// 4) Send file data in 1MB chunks
+	// 4) Send file data in 1MB chunks with progress
 	f, err := os.Open(filePath)
 	if err != nil {
 		return err
@@ -130,6 +131,9 @@ func Send(conn net.Conn, filePath string) error {
 	}
 
 	buf := make([]byte, ChunkSize)
+	var sent int64
+	start := time.Now()
+	lastTick := time.Time{}
 	for {
 		n, rerr := f.Read(buf)
 		if n > 0 {
@@ -141,11 +145,20 @@ func Send(conn net.Conn, filePath string) error {
 			if _, werr := bw.Write(ct); werr != nil {
 				return fmt.Errorf("write chunk: %w", werr)
 			}
+			sent += int64(n)
+			now := time.Now()
+			if lastTick.IsZero() || now.Sub(lastTick) >= 200*time.Millisecond {
+				printProgress("Sending", man.Name, sent, man.Size, start)
+				lastTick = now
+			}
 		}
 		if rerr == io.EOF {
 			if err := bw.Flush(); err != nil {
 				return fmt.Errorf("flush chunks: %w", err)
 			}
+			// Final progress line
+			printProgress("Sending", man.Name, man.Size, man.Size, start)
+			fmt.Print("\n")
 			break
 		}
 		if rerr != nil {

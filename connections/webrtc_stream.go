@@ -20,14 +20,24 @@ type dcConn struct {
 
 	// deadlines are accepted but not enforced (best-effort no-op)
 	rd, wd time.Time
+
+	// backpressure for writes
+	lowCh     chan struct{}
+	threshold uint64 // BufferedAmountLowThreshold
+	highWater uint64 // when BufferedAmount exceeds this, wait
 }
 
 // newDCConn wraps the given DataChannel.
 func newDCConn(dc *webrtc.DataChannel) *dcConn {
 	c := &dcConn{
-		dc:   dc,
-		msgs: make(chan []byte, 64),
+		dc:    dc,
+		msgs:  make(chan []byte, 64),
+		lowCh: make(chan struct{}, 1),
 	}
+	// Configure backpressure thresholds
+	c.threshold = 1 << 20 // 1 MiB
+	c.highWater = c.threshold * 4
+	dc.SetBufferedAmountLowThreshold(c.threshold)
 	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 		// Copy buffer because msg.Data is reused by pion
 		b := make([]byte, len(msg.Data))
@@ -39,6 +49,12 @@ func newDCConn(dc *webrtc.DataChannel) *dcConn {
 			c.msgs <- b
 		}
 	})
+	dc.OnBufferedAmountLow(func() {
+		select {
+		case c.lowCh <- struct{}{}:
+		default:
+		}
+	})
 	dc.OnClose(func() {
 		c.mu.Lock()
 		if !c.closed {
@@ -46,6 +62,11 @@ func newDCConn(dc *webrtc.DataChannel) *dcConn {
 			close(c.msgs)
 		}
 		c.mu.Unlock()
+		// wake waiters
+		select {
+		case c.lowCh <- struct{}{}:
+		default:
+		}
 	})
 	return c
 }
@@ -92,6 +113,23 @@ func (c *dcConn) Write(p []byte) (int, error) {
 		n := len(p)
 		if n > max {
 			n = max
+		}
+		// Backpressure: wait until buffered amount drops below high water
+		for {
+			c.mu.Lock()
+			closed := c.closed
+			c.mu.Unlock()
+			if closed {
+				return written, io.EOF
+			}
+			if c.dc.BufferedAmount() <= c.highWater {
+				break
+			}
+			// Wait for low signal or timeout to re-check
+			select {
+			case <-c.lowCh:
+			case <-time.After(50 * time.Millisecond):
+			}
 		}
 		if err := c.dc.Send(p[:n]); err != nil {
 			return written, err
