@@ -83,24 +83,28 @@ func main() {
 			case <-time.After(15 * time.Second):
 				log.Fatal("Timed out waiting for connection")
 			}
-			// Open a stream adapter and allow single file send
+			// Open a stream adapter and allow multiple file sends
 			conn, err := peer.DataChannelConn()
 			if err != nil {
 				log.Fatalf("data channel not ready: %v", err)
 			}
-			fmt.Print("Enter 'send <path>' to transfer a file, or 'quit' to exit: ")
-			cmd := strings.TrimSpace(readLine())
-			if cmd == "quit" {
-				return
-			}
-			if strings.HasPrefix(cmd, "send ") {
-				path := strings.TrimSpace(strings.TrimPrefix(cmd, "send "))
-				if err := transfer.Send(conn, path); err != nil {
-					log.Fatalf("File send failed: %v", err)
+			for {
+				fmt.Print("Enter 'send <path>' to transfer a file, or 'quit' to exit: ")
+				cmd := strings.TrimSpace(readLine())
+				if cmd == "quit" {
+					_ = conn.Close()
+					return
 				}
-				log.Println("File transfer complete (webrtc sender)")
+				if strings.HasPrefix(cmd, "send ") {
+					path := strings.TrimSpace(strings.TrimPrefix(cmd, "send "))
+					if err := transfer.Send(conn, path); err != nil {
+						log.Printf("File send failed: %v", err)
+						_ = conn.Close()
+						return
+					}
+					log.Println("File transfer complete (webrtc sender)")
+				}
 			}
-			return
 
 		case 2:
 			// Receiver: paste offer, generate answer, print it
@@ -135,12 +139,15 @@ func main() {
 			if err != nil {
 				log.Fatalf("data channel not ready: %v", err)
 			}
-			_, path, err := transfer.Receive(conn)
-			if err != nil {
-				log.Fatalf("File receive failed: %v", err)
+			for {
+				man, path, err := transfer.Receive(conn)
+				if err != nil {
+					log.Printf("File receive ended: %v", err)
+					_ = conn.Close()
+					return
+				}
+				log.Printf("File transfer complete (webrtc receiver). Received %s -> %s\n", man.Name, path)
 			}
-			log.Printf("File transfer complete (webrtc receiver). Saved to: %s\n", path)
-			return
 
 		default:
 			log.Fatal("Invalid role; please run again and choose 1 or 2")
@@ -165,13 +172,15 @@ func main() {
 		if err != nil {
 			return
 		}
-		_, path, err := transfer.Receive(conn)
-		if err != nil {
-			fmt.Printf("File receive failed from %s: %v\n", peer, err)
-		} else {
-			fmt.Printf("File transfer complete (receiver). Saved to: %s\n", path)
+		for {
+			man, path, err := transfer.Receive(conn)
+			if err != nil {
+				fmt.Printf("File receive ended from %s: %v\n", peer, err)
+				_ = conn.Close()
+				return
+			}
+			fmt.Printf("File transfer complete (receiver). Received %s -> %s\n", man.Name, path)
 		}
-		_ = conn.Close()
 	}()
 
 	server, err := connections.StartMDNS(name, port)
@@ -261,7 +270,7 @@ func main() {
 			fmt.Printf("Connected to %s successfully! You can keep this node running.\n", peerName)
 			// Stop discovery and further peer listing while connected
 			cancel()
-			// Simple loop to send one file over this open connection; command: send <path>, or 'quit'
+			// Loop to send multiple files over this open TCP connection
 			for {
 				fmt.Print("Enter 'send <path>' to transfer a file, or 'quit' to exit: ")
 				cmd := strings.TrimSpace(readLine())
@@ -275,12 +284,9 @@ func main() {
 					if err := transfer.Send(conn, path); err != nil {
 						fmt.Printf("File send failed: %v\n", err)
 						conn.Close()
-						continue
+						return
 					}
-					conn.Close()
 					fmt.Println("File transfer complete (sender)")
-					// Single transfer per connection; exit after success
-					return
 				}
 			}
 		}
