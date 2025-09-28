@@ -22,22 +22,56 @@ const PublicDir = "public"
 // TODO: For large files, consider hashing on the fly and compare to manifest.Hash (sha256).
 func Receive(conn net.Conn) (Manifest, string, error) {
 	br := bufio.NewReader(conn)
+	bw := bufio.NewWriter(conn)
 
-	// 1) Read header: version, key, base nonce
+	// 0) Send our RSA public key first: 0x01 | uint32(len) | pubDER
+	priv, err := pcrypto.GetOrCreateRSA4096()
+	if err != nil {
+		return Manifest{}, "", fmt.Errorf("rsa key: %w", err)
+	}
+	pubDER, err := pcrypto.MarshalPublicKeyDER(&priv.PublicKey)
+	if err != nil {
+		return Manifest{}, "", fmt.Errorf("marshal pubkey: %w", err)
+	}
+	if err := bw.WriteByte(0x01); err != nil {
+		return Manifest{}, "", fmt.Errorf("write pubkey tag: %w", err)
+	}
+	if err := binary.Write(bw, binary.BigEndian, uint32(len(pubDER))); err != nil {
+		return Manifest{}, "", fmt.Errorf("write pubkey len: %w", err)
+	}
+	if _, err := bw.Write(pubDER); err != nil {
+		return Manifest{}, "", fmt.Errorf("write pubkey der: %w", err)
+	}
+	if err := bw.Flush(); err != nil {
+		return Manifest{}, "", fmt.Errorf("flush pubkey: %w", err)
+	}
+
+	// 1) Read header: version(0x02), encKeyLen, encKey(RSA-OAEP), base nonce
 	ver, err := br.ReadByte()
 	if err != nil {
 		return Manifest{}, "", fmt.Errorf("read header version: %w", err)
 	}
-	if ver != 0x01 {
-		return Manifest{}, "", fmt.Errorf("unknown header version: %d", ver)
+	if ver != 0x02 {
+		return Manifest{}, "", fmt.Errorf("unexpected header version: %d", ver)
 	}
-	key := make([]byte, pcrypto.KeySize)
-	if _, err := io.ReadFull(br, key); err != nil {
-		return Manifest{}, "", fmt.Errorf("read key: %w", err)
+	var ekLen uint32
+	if err := binary.Read(br, binary.BigEndian, &ekLen); err != nil {
+		return Manifest{}, "", fmt.Errorf("read encKey len: %w", err)
+	}
+	if ekLen == 0 || ekLen > 10_000 { // RSA-4096 OAEP ciphertext size is ~512 bytes
+		return Manifest{}, "", fmt.Errorf("invalid encKey len: %d", ekLen)
+	}
+	encKey := make([]byte, ekLen)
+	if _, err := io.ReadFull(br, encKey); err != nil {
+		return Manifest{}, "", fmt.Errorf("read encKey: %w", err)
 	}
 	base := make([]byte, pcrypto.NonceSize)
 	if _, err := io.ReadFull(br, base); err != nil {
-		return Manifest{}, "", fmt.Errorf("read nonce: %w", err)
+		return Manifest{}, "", fmt.Errorf("read base nonce: %w", err)
+	}
+	key, err := pcrypto.DecryptKeyRSAOAEP(priv, encKey)
+	if err != nil {
+		return Manifest{}, "", fmt.Errorf("rsa-oaep decrypt: %w", err)
 	}
 	aead, err := pcrypto.NewGCM(key)
 	if err != nil {

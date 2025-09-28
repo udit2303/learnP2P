@@ -17,6 +17,11 @@ import (
 const ChunkSize = 1 << 20 // 1MB
 
 // Send streams the file with AES-GCM encryption.
+// Protocol (single workflow, no legacy):
+// 1) Receiver sends: 0x01 | uint32(pubLen) | pubDER (RSA-4096 PKIX)
+// 2) Sender replies: 0x02 | uint32(encKeyLen) | encKey(RSA-OAEP of AES key) | baseNonce(12)
+// 3) Sender sends: uint32(len(cman)) | cman (GCM over manifest, AAD="manifest")
+// 4) Sender streams chunks: [ uint32(len(ct)) | ct ]* using AAD=sha256(manifest.data)
 func Send(conn net.Conn, filePath string) error {
 	// Build manifest
 	man, err := BuildManifest(filePath)
@@ -24,9 +29,34 @@ func Send(conn net.Conn, filePath string) error {
 		return fmt.Errorf("build manifest: %w", err)
 	}
 
+	br := bufio.NewReader(conn)
 	bw := bufio.NewWriter(conn)
 
-	// Create session: key + base nonce
+	// 1) Read receiver's RSA public key message
+	msgType, err := br.ReadByte()
+	if err != nil {
+		return fmt.Errorf("read receiver pubkey: %w", err)
+	}
+	if msgType != 0x01 {
+		return fmt.Errorf("unexpected receiver message type: 0x%02x", msgType)
+	}
+	var pkLen uint32
+	if err := binary.Read(br, binary.BigEndian, &pkLen); err != nil {
+		return fmt.Errorf("read pubkey len: %w", err)
+	}
+	if pkLen == 0 || pkLen > 1_000_000 {
+		return fmt.Errorf("invalid pubkey length: %d", pkLen)
+	}
+	pkDER := make([]byte, pkLen)
+	if _, err := io.ReadFull(br, pkDER); err != nil {
+		return fmt.Errorf("read pubkey der: %w", err)
+	}
+	pub, err := pcrypto.ParsePublicKeyDER(pkDER)
+	if err != nil {
+		return fmt.Errorf("parse pubkey: %w", err)
+	}
+
+	// 2) Create session key + base nonce, encrypt key with RSA-OAEP and send header v0x02
 	key, err := pcrypto.GenerateKey()
 	if err != nil {
 		return fmt.Errorf("gen key: %w", err)
@@ -39,15 +69,24 @@ func Send(conn net.Conn, filePath string) error {
 	if _, err := rand.Read(base); err != nil {
 		return fmt.Errorf("nonce: %w", err)
 	}
-	// Write header: version(1) | key(32) | baseNonce(12)
-	if err := bw.WriteByte(0x01); err != nil {
+	encKey, err := pcrypto.EncryptKeyRSAOAEP(pub, key)
+	if err != nil {
+		return fmt.Errorf("rsa-oaep encrypt: %w", err)
+	}
+	if err := bw.WriteByte(0x02); err != nil { // header version
 		return err
 	}
-	if _, err := bw.Write(key); err != nil {
-		return err
+	if err := binary.Write(bw, binary.BigEndian, uint32(len(encKey))); err != nil {
+		return fmt.Errorf("write encKey len: %w", err)
+	}
+	if _, err := bw.Write(encKey); err != nil {
+		return fmt.Errorf("write encKey: %w", err)
 	}
 	if _, err := bw.Write(base); err != nil {
-		return err
+		return fmt.Errorf("write base nonce: %w", err)
+	}
+	if err := bw.Flush(); err != nil {
+		return fmt.Errorf("flush header: %w", err)
 	}
 
 	// nonce counter in last 4 bytes (big endian)
@@ -64,7 +103,7 @@ func Send(conn net.Conn, filePath string) error {
 		return n
 	}
 
-	// Encrypted manifest
+	// 3) Encrypted manifest
 	manBytes, _ := json.Marshal(man)
 	cman := aead.Seal(nil, nonceFor(), manBytes, []byte("manifest"))
 	if err := binary.Write(bw, binary.BigEndian, uint32(len(cman))); err != nil {
@@ -77,7 +116,7 @@ func Send(conn net.Conn, filePath string) error {
 		return fmt.Errorf("flush manifest: %w", err)
 	}
 
-	// Send file data in 1MB chunks
+	// 4) Send file data in 1MB chunks
 	f, err := os.Open(filePath)
 	if err != nil {
 		return err
