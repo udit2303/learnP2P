@@ -18,6 +18,8 @@ type WebRTC struct {
 type Peer struct {
 	pc        *webrtc.PeerConnection
 	connected chan struct{}
+	dc        *webrtc.DataChannel
+	dcReady   chan struct{}
 }
 
 // NewWebRTC creates a minimal WebRTC peer connection with a single ordered, reliable data channel.
@@ -85,11 +87,19 @@ func GenerateOffer() (string, *Peer, error) {
 	}
 
 	connected := make(chan struct{})
+	dcReady := make(chan struct{})
+	peer := &Peer{pc: w.PeerConn, connected: connected, dc: dc, dcReady: dcReady}
+
 	dc.OnOpen(func() {
 		select {
 		case <-connected:
 		default:
 			close(connected)
+		}
+		select { // signal dc ready
+		case <-dcReady:
+		default:
+			close(dcReady)
 		}
 	})
 	w.PeerConn.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
@@ -118,7 +128,7 @@ func GenerateOffer() (string, *Peer, error) {
 		w.Close()
 		return "", nil, err
 	}
-	return enc, &Peer{pc: w.PeerConn, connected: connected}, nil
+	return enc, peer, nil
 }
 
 // AcceptAnswer applies a base64-encoded SDP answer to the given offerer peer.
@@ -138,12 +148,20 @@ func AcceptOfferAndGenerateAnswer(b64Offer string) (string, *Peer, error) {
 	}
 
 	connected := make(chan struct{})
+	peer := &Peer{pc: w.PeerConn, connected: connected, dcReady: make(chan struct{})}
+
 	w.PeerConn.OnDataChannel(func(dc *webrtc.DataChannel) {
+		peer.dc = dc
 		dc.OnOpen(func() {
 			select {
 			case <-connected:
 			default:
 				close(connected)
+			}
+			select {
+			case <-peer.dcReady:
+			default:
+				close(peer.dcReady)
 			}
 		})
 	})
@@ -182,11 +200,17 @@ func AcceptOfferAndGenerateAnswer(b64Offer string) (string, *Peer, error) {
 		w.Close()
 		return "", nil, err
 	}
-	return enc, &Peer{pc: w.PeerConn, connected: connected}, nil
+	return enc, peer, nil
 }
 
 // Connected returns a channel that closes when the peer is connected.
 func (p *Peer) Connected() <-chan struct{} { return p.connected }
+
+// internal access for the datachannel wrapper
+func (p *Peer) getDataChannel() *webrtc.DataChannel { return p.dc }
+
+// DataChannelReady closes when the negotiated datachannel is open.
+func (p *Peer) DataChannelReady() <-chan struct{} { return p.dcReady }
 
 func encodeSDP(sd webrtc.SessionDescription) (string, error) {
 	b, err := json.Marshal(sd)

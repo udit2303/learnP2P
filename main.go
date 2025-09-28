@@ -83,6 +83,23 @@ func main() {
 			case <-time.After(15 * time.Second):
 				log.Fatal("Timed out waiting for connection")
 			}
+			// Open a stream adapter and allow single file send
+			conn, err := peer.DataChannelConn()
+			if err != nil {
+				log.Fatalf("data channel not ready: %v", err)
+			}
+			fmt.Print("Enter 'send <path>' to transfer a file, or 'quit' to exit: ")
+			cmd := strings.TrimSpace(readLine())
+			if cmd == "quit" {
+				return
+			}
+			if strings.HasPrefix(cmd, "send ") {
+				path := strings.TrimSpace(strings.TrimPrefix(cmd, "send "))
+				if err := transfer.Send(conn, path); err != nil {
+					log.Fatalf("File send failed: %v", err)
+				}
+				log.Println("File transfer complete (webrtc sender)")
+			}
 			return
 
 		case 2:
@@ -107,6 +124,22 @@ func main() {
 			case <-time.After(15 * time.Second):
 				log.Fatal("Timed out waiting for connection")
 			}
+			// Receive a single file on the data channel (wait for ready)
+			log.Println("Waiting for incoming file over WebRTC data channel...")
+			select {
+			case <-peer.DataChannelReady():
+			case <-time.After(10 * time.Second):
+				log.Fatal("data channel not ready")
+			}
+			conn, err := peer.DataChannelConn()
+			if err != nil {
+				log.Fatalf("data channel not ready: %v", err)
+			}
+			_, path, err := transfer.Receive(conn)
+			if err != nil {
+				log.Fatalf("File receive failed: %v", err)
+			}
+			log.Printf("File transfer complete (webrtc receiver). Saved to: %s\n", path)
 			return
 
 		default:
