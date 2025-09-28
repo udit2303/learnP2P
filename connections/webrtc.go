@@ -36,7 +36,15 @@ func NewWebRTC() (*WebRTC, error) {
 	cfg := webrtc.Configuration{
 		ICETransportPolicy: webrtc.ICETransportPolicyAll,
 		ICEServers: []webrtc.ICEServer{
-			{URLs: []string{"stun:stun.l.google.com:19302"}},
+			{URLs: []string{
+				"stun:stun.l.google.com:19302",
+				"stun:stun1.l.google.com:19302",
+				"stun:stun2.l.google.com:19302",
+				"stun:stun3.l.google.com:19302",
+				"stun:stun4.l.google.com:19302",
+				"stun:stun.cloudflare.com:3478",
+				"stun:stun.stunprotocol.org:3478",
+			}},
 		},
 	}
 

@@ -169,14 +169,18 @@ func Receive(conn net.Conn) (Manifest, string, error) {
 	printProgress("Receiving", man.Name, written, man.Size, start)
 	fmt.Print("\n")
 
-	// Verify SHA-256 matches manifest
+	// Verify SHA-256 matches manifest, with simple logging
+	fmt.Printf("Verifying integrity (SHA-256) for %s... ", man.Name)
+	vstart := time.Now()
 	calc := hex.EncodeToString(h.Sum(nil))
 	if calc != man.Hash {
+		fmt.Printf("FAILED (expected %s, got %s)\n", man.Hash, calc)
 		// Cleanup partial file
 		_ = out.Close()
 		_ = os.Remove(tmpPath)
 		return Manifest{}, "", fmt.Errorf("hash mismatch: got %s, expected %s", calc, man.Hash)
 	}
+	fmt.Printf("OK (took %s)\n", time.Since(vstart).Round(time.Millisecond))
 
 	if err := os.Rename(tmpPath, outPath); err != nil {
 		return Manifest{}, "", fmt.Errorf("finalize file: %w", err)
