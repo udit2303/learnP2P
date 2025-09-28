@@ -168,8 +168,3 @@ Limitations and recommendations:
 - Chunk size: 1 MiB per data chunk prior to encryption.
 
 ---
-
-## Next steps (ideas)
-- Forward secrecy using ephemeral ECDH (X25519 + HKDF) for per-session keys.
-- Progress UI and transfer resume.
-- Configurable chunk size and timeouts; richer error reporting.

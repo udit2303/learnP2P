@@ -19,7 +19,6 @@ import (
 const PublicDir = "public"
 
 // Receive reads manifest then file chunks, storing to public/<name>. It validates total size.
-// TODO: For large files, consider hashing on the fly and compare to manifest.Hash (sha256).
 func Receive(conn net.Conn) (Manifest, string, error) {
 	br := bufio.NewReader(conn)
 	bw := bufio.NewWriter(conn)

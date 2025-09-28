@@ -20,6 +20,8 @@ func main() {
 	webrtcFlag := flag.Bool("webrtc", false, "Use WebRTC interactive mode (deprecated; use --webrtc-send or --webrtc-recv)")
 	webrtcSend := flag.Bool("webrtc-send", false, "WebRTC sender: generate OFFER and read ANSWER")
 	webrtcRecv := flag.Bool("webrtc-recv", false, "WebRTC receiver: paste OFFER and output ANSWER")
+	offerFile := flag.String("offer-file", "", "Path to file containing base64 OFFER (for --webrtc-recv)")
+	answerFile := flag.String("answer-file", "", "Path to file containing base64 ANSWER (for --webrtc-send)")
 	portFlag := flag.Int("port", 8000, "Port to expose for local discovery")
 	nameFlag := flag.String("name", "", "Node name to expose (default: COMPUTERNAME)")
 	passwordFlag := flag.String("password", "", "Password for local connection authentication (required to connect)")
@@ -67,8 +69,17 @@ func main() {
 			fmt.Println(offerB64)
 			fmt.Println("--- END OFFER ---")
 
-			fmt.Print("Paste receiver ANSWER and press Enter:\n> ")
-			ansB64 := strings.TrimSpace(readLine())
+			var ansB64 string
+			if *answerFile != "" {
+				data, err := os.ReadFile(*answerFile)
+				if err != nil {
+					log.Fatalf("Failed to read --answer-file: %v", err)
+				}
+				ansB64 = strings.TrimSpace(string(data))
+			} else {
+				fmt.Print("Paste receiver ANSWER and press Enter:\n> ")
+				ansB64 = strings.TrimSpace(readLine())
+			}
 			if ansB64 == "" {
 				log.Fatal("Empty ANSWER provided")
 			}
@@ -108,8 +119,17 @@ func main() {
 
 		case 2:
 			// Receiver: paste offer, generate answer, print it
-			fmt.Print("Paste sender OFFER and press Enter:\n> ")
-			offerB64 := strings.TrimSpace(readLine())
+			var offerB64 string
+			if *offerFile != "" {
+				data, err := os.ReadFile(*offerFile)
+				if err != nil {
+					log.Fatalf("Failed to read --offer-file: %v", err)
+				}
+				offerB64 = strings.TrimSpace(string(data))
+			} else {
+				fmt.Print("Paste sender OFFER and press Enter:\n> ")
+				offerB64 = strings.TrimSpace(readLine())
+			}
 			if offerB64 == "" {
 				log.Fatal("Empty OFFER provided")
 			}

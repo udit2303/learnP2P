@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/pion/webrtc/v4"
 )
@@ -44,7 +45,19 @@ func NewWebRTC() (*WebRTC, error) {
 				"stun:stun4.l.google.com:19302",
 				"stun:stun.cloudflare.com:3478",
 				"stun:stun.stunprotocol.org:3478",
+				"stun:stun.relay.metered.ca:80",
 			}},
+			// Public TURN fallback (may relay; not pure P2P). Demo credentials only.
+			{
+				URLs: []string{
+					"turn:global.relay.metered.ca:80",
+					"turn:global.relay.metered.ca:443",
+					"turn:global.relay.metered.ca:80?transport=tcp",
+					"turns:global.relay.metered.ca:443?transport=tcp",
+				},
+				Username:   "c383bd85b91051c9a1253209",
+				Credential: "oybe0OgcmaWwDSWO",
+			},
 		},
 	}
 
@@ -229,7 +242,18 @@ func encodeSDP(sd webrtc.SessionDescription) (string, error) {
 }
 
 func decodeSDP(b64 string, out *webrtc.SessionDescription) error {
-	b, err := base64.StdEncoding.DecodeString(b64)
+	// Sanitize: remove whitespace and non-base64 characters commonly introduced by wrapping
+	// Keep only A–Z a–z 0–9 + / =
+	var sb strings.Builder
+	sb.Grow(len(b64))
+	for i := 0; i < len(b64); i++ {
+		c := b64[i]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '+' || c == '/' || c == '=' {
+			sb.WriteByte(c)
+		}
+	}
+	clean := sb.String()
+	b, err := base64.StdEncoding.DecodeString(clean)
 	if err != nil {
 		return fmt.Errorf("base64 decode: %w", err)
 	}
