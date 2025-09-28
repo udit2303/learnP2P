@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"learnP2P/connections"
+	"learnP2P/transfer"
 )
 
 func main() {
@@ -64,7 +65,7 @@ func main() {
 			}
 			fmt.Println("\n--- SEND THIS OFFER TO THE RECEIVER ---")
 			fmt.Println(offerB64)
-			fmt.Println("--- END OFFER ---\n")
+			fmt.Println("--- END OFFER ---")
 
 			fmt.Print("Paste receiver ANSWER and press Enter:\n> ")
 			ansB64 := strings.TrimSpace(readLine())
@@ -97,7 +98,7 @@ func main() {
 			}
 			fmt.Println("\n--- SEND THIS ANSWER BACK TO THE SENDER ---")
 			fmt.Println(ansB64)
-			fmt.Println("--- END ANSWER ---\n")
+			fmt.Println("--- END ANSWER ---")
 
 			// Wait for connection
 			select {
@@ -121,17 +122,24 @@ func main() {
 	}
 	fmt.Printf("Broadcasting as '%s' on port %d with IPs: %v\n", name, port, localIPs)
 
-	// Start local TCP server to accept connections and log on connect
+	// Inbound acceptor to receive exactly one file per run
 	expectedPassword := *passwordFlag
 	if expectedPassword == "" {
-		// Default expected password to node name when not provided via flag
-		expectedPassword = "hello"
+		expectedPassword = name // default expected password to node name
 	}
-	shutdownTCP, err := connections.StartLocalServer(name, port, expectedPassword)
-	if err != nil {
-		log.Fatalf("Failed to start local server: %v", err)
-	}
-	defer shutdownTCP()
+	go func() {
+		conn, peer, err := connections.ListenAndAcceptOnce(name, port, expectedPassword)
+		if err != nil {
+			return
+		}
+		_, path, err := transfer.Receive(conn)
+		if err != nil {
+			fmt.Printf("File receive failed from %s: %v\n", peer, err)
+		} else {
+			fmt.Printf("File transfer complete (receiver). Saved to: %s\n", path)
+		}
+		_ = conn.Close()
+	}()
 
 	server, err := connections.StartMDNS(name, port)
 	if err != nil {
@@ -141,7 +149,7 @@ func main() {
 
 	// Discover other nodes
 	fmt.Println("Discovering nodes on the local network...")
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
 	nodeCh, err := connections.DiscoverMDNS(ctx)
 	if err != nil {
 		log.Fatalf("Failed to browse mDNS: %v", err)
@@ -185,7 +193,6 @@ func main() {
 	}()
 
 	// Simple REPL to choose a peer to connect to
-REPL:
 	for {
 		fmt.Print("\nEnter number to connect, 0 to list peers, or -1 to quit: ")
 		choiceStr := readLine()
@@ -213,20 +220,40 @@ REPL:
 			// Prompt for password at connection time
 			fmt.Printf("Enter password for %s: ", it.Name)
 			pw := strings.TrimSpace(readLine())
-			peerName, err := connections.ConnectLocal(it.IP, it.Port, name, pw, 5*time.Second)
+			conn, peerName, err := connections.DialAndHandshake(it.IP, it.Port, name, pw, 5*time.Second)
 			if err != nil {
 				fmt.Printf("Connection failed: %v\n", err)
 				continue
 			}
 			fmt.Printf("Connected to %s successfully! You can keep this node running.\n", peerName)
-			// Stop prompting and keep process alive
-			break REPL
+			// Stop discovery and further peer listing while connected
+			cancel()
+			// Simple loop to send one file over this open connection; command: send <path>, or 'quit'
+			for {
+				fmt.Print("Enter 'send <path>' to transfer a file, or 'quit' to exit: ")
+				cmd := strings.TrimSpace(readLine())
+				if cmd == "quit" {
+					fmt.Println("Goodbye.")
+					conn.Close()
+					return
+				}
+				if strings.HasPrefix(cmd, "send ") {
+					path := strings.TrimSpace(strings.TrimPrefix(cmd, "send "))
+					if err := transfer.Send(conn, path); err != nil {
+						fmt.Printf("File send failed: %v\n", err)
+						conn.Close()
+						continue
+					}
+					conn.Close()
+					fmt.Println("File transfer complete (sender)")
+					// Single transfer per connection; exit after success
+					return
+				}
+			}
 		}
 	}
 
-	// Keep running until interrupted
-	fmt.Println("Press Ctrl+C to exit.")
-	select {}
+	// End of program
 }
 
 func readLine() string {

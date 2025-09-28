@@ -89,12 +89,6 @@ func DiscoverMDNS(ctx context.Context) (<-chan Node, error) {
 		}
 	}()
 
-	go func() {
-		// Close entries when ctx is done to stop the goroutine above.
-		<-ctx.Done()
-		close(entries)
-	}()
-
 	if err := resolver.Browse(ctx, "_p2pnode._tcp", "local.", entries); err != nil {
 		return nil, fmt.Errorf("mdns browse: %w", err)
 	}
